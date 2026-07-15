@@ -54,7 +54,14 @@ exports.updateTask = asyncHandler(async (req, res) => {
   const payload = {
     ...req.body,
     isRecurring: req.body.recurrenceRule ? true : req.body.isRecurring || false,
+    updatedAt: new Date(),
   };
+
+  if (req.body.status === 'done') {
+    payload.completedAt = new Date();
+  } else if (req.body.status && req.body.status !== 'done') {
+    payload.completedAt = null;
+  }
 
   const task = await Task.findByIdAndUpdate(req.params.id, payload, { new: true, runValidators: true });
 
@@ -141,12 +148,12 @@ exports.getAnalytics = asyncHandler(async (req, res) => {
         $match: {
           ...match,
           status: 'done',
-          updatedAt: { $gte: startDate },
+          completedAt: { $gte: startDate },
         },
       },
       {
         $group: {
-          _id: { $dateToString: { format: '%Y-%m-%d', date: '$updatedAt' } },
+          _id: { $dateToString: { format: '%Y-%m-%d', date: '$completedAt' } },
           completed: { $sum: 1 },
         },
       },
@@ -186,7 +193,7 @@ exports.getAnalytics = asyncHandler(async (req, res) => {
             },
             {
               $group: {
-                _id: { $dateToString: { format: '%Y-%m-%d', date: '$updatedAt' } },
+                _id: { $dateToString: { format: '%Y-%m-%d', date: '$completedAt' } },
                 completed: { $sum: 1 },
               },
             },
@@ -233,7 +240,7 @@ exports.getAnalytics = asyncHandler(async (req, res) => {
   const completedThisWeek = await Task.countDocuments({
     ...match,
     status: 'done',
-    updatedAt: { $gte: weekStart },
+    completedAt: { $gte: weekStart },
   });
 
   const completionRate = totalTasks > 0 ? Math.round((completedCount / totalTasks) * 100) : 0;

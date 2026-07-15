@@ -33,6 +33,10 @@ const TaskDetailModal = ({ task, onClose }) => {
             <span className="block font-medium text-text-primary">Project</span>
             <span>{task.project?.name || 'Unassigned'}</span>
           </div>
+          <div>
+            <span className="block font-medium text-text-primary">Tags</span>
+            <span>{task.tags?.length ? task.tags.join(', ') : 'None'}</span>
+          </div>
         </div>
       </div>
     </div>

@@ -1,7 +1,7 @@
-import { FolderKanban, Menu, X } from 'lucide-react';
+import { FolderKanban, Menu, Plus, X } from 'lucide-react';
 import { useEffect, useState } from 'react';
 
-const ProjectSidebar = ({ projects, activeProjectId, onSelectProject }) => {
+const ProjectSidebar = ({ projects, activeProjectId, onSelectProject, onCreateProject }) => {
   const [isMobile, setIsMobile] = useState(false);
   const [isOpen, setIsOpen] = useState(false);
 
@@ -23,9 +23,21 @@ const ProjectSidebar = ({ projects, activeProjectId, onSelectProject }) => {
           <button onClick={() => setIsOpen(false)} className="rounded-md p-1 text-text-secondary">
             <X size={16} />
           </button>
-        ) : null}
+        ) : (
+          <button onClick={onCreateProject} className="inline-flex items-center gap-1 rounded-md bg-primary px-2 py-1.5 text-xs font-medium text-white hover:bg-primary-hover">
+            <Plus size={14} />
+            Add project
+          </button>
+        )}
       </div>
+      {isMobile ? (
+        <button onClick={onCreateProject} className="mb-3 inline-flex items-center gap-1 rounded-md bg-primary px-2 py-1.5 text-xs font-medium text-white hover:bg-primary-hover">
+          <Plus size={14} />
+          Add project
+        </button>
+      ) : null}
       <div className="space-y-2">
+        {projects.length === 0 ? <p className="text-sm text-text-secondary">Create a project to organize new tasks.</p> : null}
         {projects.map((project) => (
           <button
             key={project._id}

@@ -1,23 +1,21 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { useSearchParams } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { io } from 'socket.io-client';
+import api from '../utils/api';
 import ProjectSidebar from '../components/ProjectSidebar';
-import TagManager from '../components/TagManager';
 import FilterBar from '../components/FilterBar';
 import SearchBar from '../components/SearchBar';
-import KanbanBoard from '../components/KanbanBoard';
 import CalendarView from '../components/CalendarView';
 import TaskDetailModal from '../components/TaskDetailModal';
 import CreateTaskModal from '../components/CreateTaskModal';
-import AnalyticsCharts from '../components/AnalyticsCharts';
 import useDebounce from '../hooks/useDebounce';
 
 const DashboardPage = () => {
   const [searchParams, setSearchParams] = useSearchParams();
   const queryClient = useQueryClient();
   const socketRef = useRef(null);
-  const [view, setView] = useState('kanban');
+  const [view, setView] = useState('list');
   const [selectedTask, setSelectedTask] = useState(null);
   const [socketConnected, setSocketConnected] = useState(false);
   const [isCreateOpen, setIsCreateOpen] = useState(false);
@@ -58,15 +56,13 @@ const DashboardPage = () => {
   }, [query, setSearchParams]);
 
   const fetchProjects = async () => {
-    const response = await fetch('http://localhost:5000/api/projects');
-    if (!response.ok) throw new Error('Failed to load projects');
-    return response.json();
+    const response = await api.get('/api/projects');
+    return response.data;
   };
 
   const fetchTags = async () => {
-    const response = await fetch('http://localhost:5000/api/tags?project=');
-    if (!response.ok) throw new Error('Failed to load tags');
-    return response.json();
+    const response = await api.get('/api/tags', { params: { project: '' } });
+    return response.data;
   };
 
   const fetchTasks = async () => {
@@ -81,25 +77,13 @@ const DashboardPage = () => {
     if (filters.sort) params.set('sort', filters.sort);
     if (filters.order) params.set('order', filters.order);
 
-    const response = await fetch(`http://localhost:5000/api/tasks/search?${params.toString()}`);
-    if (!response.ok) throw new Error('Failed to load tasks');
-    return response.json();
+    const response = await api.get(`/api/tasks/search?${params.toString()}`);
+    return response.data;
   };
 
   const { data: projects = [] } = useQuery({ queryKey: ['projects'], queryFn: fetchProjects, staleTime: 10000 });
   const { data: tags = [] } = useQuery({ queryKey: ['tags', filters.project || ''], queryFn: fetchTags, staleTime: 10000 });
   const { data: tasks = [] } = useQuery({ queryKey: ['tasks', query], queryFn: fetchTasks, staleTime: 5000 });
-  const { data: analytics = { summary: { totalTasks: 0, completedThisWeek: 0, overdueCount: 0, completionRate: 0 }, completionSeries: [], statusBreakdown: [], priorityBreakdown: [], burndownSeries: [] } } = useQuery({
-    queryKey: ['analytics', filters.project || ''],
-    queryFn: async () => {
-      const params = new URLSearchParams();
-      if (filters.project) params.set('project', filters.project);
-      const response = await fetch(`http://localhost:5000/api/tasks/analytics?${params.toString()}`);
-      if (!response.ok) throw new Error('Failed to load analytics');
-      return response.json();
-    },
-    staleTime: 10000,
-  });
 
   useEffect(() => {
     const socket = io('http://localhost:5000', { transports: ['websocket'] });
@@ -191,46 +175,41 @@ const DashboardPage = () => {
     setSearch('');
   };
 
+  const handleCreateProject = async (event) => {
+    event.preventDefault();
+    const name = window.prompt('Project name');
+    if (!name?.trim()) return;
+
+    const response = await api.post('/api/projects', { name: name.trim() });
+    const project = response.data;
+    queryClient.setQueryData(['projects'], (current = []) => [project, ...current]);
+    handleFilterChange('project', project._id);
+  };
+
   const handleCreateTag = async (payload) => {
-    const response = await fetch('http://localhost:5000/api/tags', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        ...payload,
-        project: filters.project || projects[0]?._id || '',
-      }),
+    const response = await api.post('/api/tags', {
+      ...payload,
+      project: filters.project || projects[0]?._id || '',
     });
-    const tag = await response.json();
+    const tag = response.data;
     queryClient.setQueryData(['tags', filters.project || ''], (current = []) => [...current, tag]);
   };
 
   const handleUpdateTag = async (id, payload) => {
-    const response = await fetch(`http://localhost:5000/api/tags/${id}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-    const updatedTag = await response.json();
+    const response = await api.put(`/api/tags/${id}`, payload);
+    const updatedTag = response.data;
     queryClient.setQueryData(['tags', filters.project || ''], (current = []) => current.map((tag) => (tag._id === id ? updatedTag : tag)));
   };
 
   const handleDeleteTag = async (id) => {
-    await fetch(`http://localhost:5000/api/tags/${id}`, { method: 'DELETE' });
+    await api.delete(`/api/tags/${id}`);
     queryClient.setQueryData(['tags', filters.project || ''], (current = []) => current.filter((tag) => tag._id !== id));
   };
 
   const handleUpdateTask = async (taskId, payload) => {
-    const response = await fetch(`http://localhost:5000/api/tasks/${taskId}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
+    const response = await api.put(`/api/tasks/${taskId}`, payload);
 
-    if (!response.ok) {
-      throw new Error('Failed to update task');
-    }
-
-    const updatedTask = await response.json();
+    const updatedTask = response.data;
     queryClient.setQueriesData({ predicate: (query) => Array.isArray(query.queryKey) && query.queryKey[0] === 'tasks' }, (current = []) => {
       if (!Array.isArray(current)) return [];
       return current.map((task) => (task._id === taskId ? updatedTask : task));
@@ -239,13 +218,9 @@ const DashboardPage = () => {
   };
 
   const handleCreateTask = async (payload) => {
-    const response = await fetch('http://localhost:5000/api/tasks', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
+    const response = await api.post('/api/tasks', payload);
 
-    const task = await response.json();
+    const task = response.data;
     queryClient.setQueriesData({ predicate: (query) => Array.isArray(query.queryKey) && query.queryKey[0] === 'tasks' }, (current = []) => {
       if (!Array.isArray(current)) return [task];
       return [task, ...current.filter((item) => item._id !== task._id)];
@@ -262,74 +237,109 @@ const DashboardPage = () => {
               <h1 className="font-display text-2xl font-semibold text-text-primary">Dashboard</h1>
               <p className="mt-1 text-sm text-text-secondary">Search, filter, and organize your tasks.</p>
             </div>
-            <div className="flex items-center gap-2 rounded-full border border-border bg-surface-alt px-2.5 py-1 text-xs text-text-secondary">
-              <span className={`h-2.5 w-2.5 rounded-full ${socketConnected ? 'bg-emerald-500' : 'bg-slate-400'}`} />
-              <span className="hidden sm:inline">Live</span>
+            <div className="flex flex-wrap items-center gap-2">
+              <Link to="/analytics" className="rounded-md border border-border bg-surface-alt px-3 py-2 text-sm text-text-secondary">Analytics</Link>
+              <Link to="/settings" className="rounded-md border border-border bg-surface-alt px-3 py-2 text-sm text-text-secondary">Settings</Link>
+              <div className="flex items-center gap-2 rounded-full border border-border bg-surface-alt px-2.5 py-1 text-xs text-text-secondary">
+                <span className={`h-2.5 w-2.5 rounded-full ${socketConnected ? 'bg-emerald-500' : 'bg-slate-400'}`} />
+                <span className="hidden sm:inline">Live</span>
+              </div>
             </div>
           </div>
         </div>
 
         <div className="grid gap-4 lg:grid-cols-[260px_minmax(0,1fr)]">
-          <ProjectSidebar projects={projects} activeProjectId={filters.project} onSelectProject={(projectId) => handleFilterChange('project', projectId)} />
+          <div className="space-y-3">
+            <ProjectSidebar
+              projects={projects}
+              activeProjectId={filters.project}
+              onSelectProject={(projectId) => handleFilterChange('project', projectId)}
+              onCreateProject={handleCreateProject}
+            />
+          </div>
           <div className="space-y-4">
             <SearchBar value={search} onChange={setSearch} />
             <FilterBar filters={filters} tags={tags} projects={projects} onFilterChange={handleFilterChange} onReset={handleResetFilters} />
-            <TagManager tags={tags} onCreateTag={handleCreateTag} onUpdateTag={handleUpdateTag} onDeleteTag={handleDeleteTag} />
             <div className="rounded-md border border-border bg-surface p-4">
-              <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-                <h2 className="font-display text-lg font-semibold text-text-primary">Productivity analytics</h2>
-              </div>
-              <AnalyticsCharts
-                summary={analytics.summary}
-                completionSeries={analytics.completionSeries}
-                statusBreakdown={analytics.statusBreakdown}
-                priorityBreakdown={analytics.priorityBreakdown}
-                burndownSeries={analytics.burndownSeries}
-              />
-              <div className="mt-6 flex flex-wrap items-center justify-between gap-3">
-                <h2 className="font-display text-lg font-semibold text-text-primary">Tasks</h2>
+              <div className="mt-2 flex flex-wrap items-center justify-between gap-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h2 className="font-display text-lg font-semibold text-text-primary">Tasks</h2>
+                  <span className="rounded-full border border-border bg-surface-alt px-2.5 py-1 text-xs text-text-secondary">{tasks.length} items</span>
+                </div>
                 <div className="flex flex-wrap items-center gap-2">
                   <button onClick={() => setIsCreateOpen(true)} className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-white hover:bg-primary-hover">
                     Add task
                   </button>
                   <div className="inline-flex rounded-md border border-border bg-surface-alt p-1">
-                  {['kanban', 'list', 'calendar'].map((option) => (
-                    <button
-                      key={option}
-                      onClick={() => setView(option)}
-                      className={`rounded-md px-3 py-1 text-sm capitalize ${view === option ? 'bg-primary text-white' : 'text-text-secondary'}`}
-                    >
-                      {option}
-                    </button>
-                  ))}
+                    {['list', 'calendar'].map((option) => (
+                      <button
+                        key={option}
+                        onClick={() => setView(option)}
+                        className={`rounded-md px-3 py-1 text-sm capitalize ${view === option ? 'bg-primary text-white' : 'text-text-secondary'}`}
+                      >
+                        {option}
+                      </button>
+                    ))}
                   </div>
                 </div>
               </div>
 
-              {view === 'kanban' ? (
-                <KanbanBoard tasks={tasks} onUpdateTask={handleUpdateTask} />
-              ) : view === 'calendar' ? (
+              {view === 'calendar' ? (
                 <CalendarView tasks={tasks} onSelectTask={setSelectedTask} />
               ) : (
                 <div className="space-y-2">
                   {tasks.map((task) => (
-                    <button
+                    <div
                       key={task._id}
-                      onClick={() => setSelectedTask(task)}
                       className="w-full rounded-md border border-border bg-surface-alt p-3 text-left"
                     >
-                      <div className="flex items-center justify-between">
-                        <h3 className="font-display text-base font-semibold text-text-primary">{task.title}</h3>
-                        <span className="text-sm text-text-secondary">{task.priority}</span>
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <button onClick={() => setSelectedTask(task)} className="min-w-0 flex-1 text-left">
+                          <h3 className="font-display text-base font-semibold text-text-primary">{task.title}</h3>
+                          <p className="mt-1 text-sm text-text-secondary">{task.description || 'No description yet.'}</p>
+                          <div className="mt-2 flex flex-wrap gap-2">
+                            <span className="rounded-full border border-border px-2 py-1 text-xs text-text-secondary">{task.status}</span>
+                            {task.tags?.map((tag) => (
+                              <span key={tag} className="rounded-full bg-primary/10 px-2 py-1 text-xs text-primary">{tag}</span>
+                            ))}
+                          </div>
+                        </button>
+                        <div className="flex items-center gap-3 text-sm text-text-secondary">
+                          <div className="text-right">
+                            <div className="font-medium text-text-primary">{task.priority}</div>
+                            <div>{task.dueDate ? new Date(task.dueDate).toLocaleDateString() : 'No due date'}</div>
+                          </div>
+                          <label className="inline-flex items-center gap-2 rounded-full border border-border bg-surface px-2 py-1 text-xs">
+                            <input
+                              type="checkbox"
+                              checked={task.status === 'done'}
+                              onChange={async (event) => {
+                                const nextStatus = event.target.checked ? 'done' : 'todo';
+                                const updatedTask = await handleUpdateTask(task._id, { status: nextStatus });
+                                queryClient.setQueriesData({ predicate: (query) => Array.isArray(query.queryKey) && query.queryKey[0] === 'tasks' }, (current = []) => {
+                                  if (!Array.isArray(current)) return [];
+                                  return current.map((item) => (item._id === task._id ? updatedTask : item));
+                                });
+                              }}
+                            />
+                            Done
+                          </label>
+                        </div>
                       </div>
-                      <p className="mt-1 text-sm text-text-secondary">{task.description}</p>
-                    </button>
+                    </div>
                   ))}
                 </div>
               )}
             </div>
             {selectedTask ? <TaskDetailModal task={selectedTask} onClose={() => setSelectedTask(null)} /> : null}
-            <CreateTaskModal isOpen={isCreateOpen} onClose={() => setIsCreateOpen(false)} onCreate={handleCreateTask} />
+            <CreateTaskModal
+              isOpen={isCreateOpen}
+              onClose={() => setIsCreateOpen(false)}
+              onCreate={handleCreateTask}
+              projects={projects}
+              tags={tags}
+              defaultProjectId={filters.project || projects[0]?._id || ''}
+            />
           </div>
         </div>
       </div>
