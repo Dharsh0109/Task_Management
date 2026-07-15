@@ -55,6 +55,7 @@ const taskSchema = new mongoose.Schema({
   recurrenceRule: {
     type: String,
     default: '',
+    enum: ['', 'daily', 'weekly', 'monthly'],
   },
   createdAt: {
     type: Date,
