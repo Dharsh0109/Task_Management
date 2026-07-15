@@ -7,11 +7,13 @@ const {
   deleteTask,
   searchTasks,
   toggleRecurrence,
+  getAnalytics,
 } = require('../controllers/taskController');
 
 const router = express.Router();
 
 router.get('/search', searchTasks);
+router.get('/analytics', getAnalytics);
 router.get('/', getTasks);
 router.post('/', createTask);
 router.get('/:id', getTaskById);

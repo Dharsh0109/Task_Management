@@ -10,6 +10,7 @@ import KanbanBoard from '../components/KanbanBoard';
 import CalendarView from '../components/CalendarView';
 import TaskDetailModal from '../components/TaskDetailModal';
 import CreateTaskModal from '../components/CreateTaskModal';
+import AnalyticsCharts from '../components/AnalyticsCharts';
 import useDebounce from '../hooks/useDebounce';
 
 const DashboardPage = () => {
@@ -88,6 +89,17 @@ const DashboardPage = () => {
   const { data: projects = [] } = useQuery({ queryKey: ['projects'], queryFn: fetchProjects, staleTime: 10000 });
   const { data: tags = [] } = useQuery({ queryKey: ['tags', filters.project || ''], queryFn: fetchTags, staleTime: 10000 });
   const { data: tasks = [] } = useQuery({ queryKey: ['tasks', query], queryFn: fetchTasks, staleTime: 5000 });
+  const { data: analytics = { summary: { totalTasks: 0, completedThisWeek: 0, overdueCount: 0, completionRate: 0 }, completionSeries: [], statusBreakdown: [], priorityBreakdown: [], burndownSeries: [] } } = useQuery({
+    queryKey: ['analytics', filters.project || ''],
+    queryFn: async () => {
+      const params = new URLSearchParams();
+      if (filters.project) params.set('project', filters.project);
+      const response = await fetch(`http://localhost:5000/api/tasks/analytics?${params.toString()}`);
+      if (!response.ok) throw new Error('Failed to load analytics');
+      return response.json();
+    },
+    staleTime: 10000,
+  });
 
   useEffect(() => {
     const socket = io('http://localhost:5000', { transports: ['websocket'] });
@@ -265,6 +277,16 @@ const DashboardPage = () => {
             <TagManager tags={tags} onCreateTag={handleCreateTag} onUpdateTag={handleUpdateTag} onDeleteTag={handleDeleteTag} />
             <div className="rounded-md border border-border bg-surface p-4">
               <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+                <h2 className="font-display text-lg font-semibold text-text-primary">Productivity analytics</h2>
+              </div>
+              <AnalyticsCharts
+                summary={analytics.summary}
+                completionSeries={analytics.completionSeries}
+                statusBreakdown={analytics.statusBreakdown}
+                priorityBreakdown={analytics.priorityBreakdown}
+                burndownSeries={analytics.burndownSeries}
+              />
+              <div className="mt-6 flex flex-wrap items-center justify-between gap-3">
                 <h2 className="font-display text-lg font-semibold text-text-primary">Tasks</h2>
                 <div className="flex flex-wrap items-center gap-2">
                   <button onClick={() => setIsCreateOpen(true)} className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-white hover:bg-primary-hover">
