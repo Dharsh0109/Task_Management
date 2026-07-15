@@ -1,5 +1,7 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
+import { io } from 'socket.io-client';
 import ProjectSidebar from '../components/ProjectSidebar';
 import TagManager from '../components/TagManager';
 import FilterBar from '../components/FilterBar';
@@ -12,11 +14,11 @@ import useDebounce from '../hooks/useDebounce';
 
 const DashboardPage = () => {
   const [searchParams, setSearchParams] = useSearchParams();
-  const [projects, setProjects] = useState([]);
-  const [tags, setTags] = useState([]);
-  const [tasks, setTasks] = useState([]);
+  const queryClient = useQueryClient();
+  const socketRef = useRef(null);
   const [view, setView] = useState('kanban');
   const [selectedTask, setSelectedTask] = useState(null);
+  const [socketConnected, setSocketConnected] = useState(false);
   const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [search, setSearch] = useState(searchParams.get('q') || '');
   const [filters, setFilters] = useState({
@@ -54,32 +56,110 @@ const DashboardPage = () => {
     setSearchParams(params, { replace: true });
   }, [query, setSearchParams]);
 
-  useEffect(() => {
-    fetch('http://localhost:5000/api/projects')
-      .then((response) => response.json())
-      .then((data) => setProjects(data));
+  const fetchProjects = async () => {
+    const response = await fetch('http://localhost:5000/api/projects');
+    if (!response.ok) throw new Error('Failed to load projects');
+    return response.json();
+  };
 
-    fetch('http://localhost:5000/api/tags?project=')
-      .then((response) => response.json())
-      .then((data) => setTags(data));
-  }, []);
+  const fetchTags = async () => {
+    const response = await fetch('http://localhost:5000/api/tags?project=');
+    if (!response.ok) throw new Error('Failed to load tags');
+    return response.json();
+  };
 
-  useEffect(() => {
+  const fetchTasks = async () => {
     const params = new URLSearchParams();
     if (debouncedSearch) params.set('q', debouncedSearch);
     if (filters.status) params.set('status', filters.status);
     if (filters.priority) params.set('priority', filters.priority);
-    if (filters.project) params.set('project', filters.project);
     if (filters.tag) params.set('tag', filters.tag);
+    if (filters.project) params.set('project', filters.project);
     if (filters.startDate) params.set('startDate', filters.startDate);
     if (filters.endDate) params.set('endDate', filters.endDate);
     if (filters.sort) params.set('sort', filters.sort);
     if (filters.order) params.set('order', filters.order);
 
-    fetch(`http://localhost:5000/api/tasks/search?${params.toString()}`)
-      .then((response) => response.json())
-      .then((data) => setTasks(data));
-  }, [debouncedSearch, filters]);
+    const response = await fetch(`http://localhost:5000/api/tasks/search?${params.toString()}`);
+    if (!response.ok) throw new Error('Failed to load tasks');
+    return response.json();
+  };
+
+  const { data: projects = [] } = useQuery({ queryKey: ['projects'], queryFn: fetchProjects, staleTime: 10000 });
+  const { data: tags = [] } = useQuery({ queryKey: ['tags', filters.project || ''], queryFn: fetchTags, staleTime: 10000 });
+  const { data: tasks = [] } = useQuery({ queryKey: ['tasks', query], queryFn: fetchTasks, staleTime: 5000 });
+
+  useEffect(() => {
+    const socket = io('http://localhost:5000', { transports: ['websocket'] });
+    socketRef.current = socket;
+
+    socket.on('connect', () => setSocketConnected(true));
+    socket.on('disconnect', () => setSocketConnected(false));
+
+    const applyTaskChange = (task) => {
+      queryClient.setQueriesData({ predicate: (query) => Array.isArray(query.queryKey) && query.queryKey[0] === 'tasks' }, (current = []) => {
+        if (!Array.isArray(current)) return [];
+
+        const taskId = task?._id;
+        if (!taskId) return current;
+
+        if (task?.__deleted) {
+          return current.filter((item) => item._id !== taskId);
+        }
+
+        const exists = current.some((item) => item._id === taskId);
+        if (!exists) {
+          return [task, ...current];
+        }
+
+        return current.map((item) => (item._id === taskId ? task : item));
+      });
+
+      if (selectedTask?._id === task?._id) {
+        setSelectedTask(task);
+      }
+    };
+
+    socket.on('task:created', applyTaskChange);
+    socket.on('task:updated', applyTaskChange);
+    socket.on('task:status-changed', applyTaskChange);
+    socket.on('task:deleted', (payload) => {
+      queryClient.setQueriesData({ predicate: (query) => Array.isArray(query.queryKey) && query.queryKey[0] === 'tasks' }, (current = []) => {
+        if (!Array.isArray(current)) return [];
+        return current.filter((item) => item._id !== payload._id);
+      });
+      if (selectedTask?._id === payload._id) {
+        setSelectedTask(null);
+      }
+    });
+    socket.on('task:subtasks-updated', applyTaskChange);
+
+    return () => {
+      socket.off('connect');
+      socket.off('disconnect');
+      socket.off('task:created', applyTaskChange);
+      socket.off('task:updated', applyTaskChange);
+      socket.off('task:status-changed', applyTaskChange);
+      socket.off('task:deleted');
+      socket.off('task:subtasks-updated', applyTaskChange);
+      socket.disconnect();
+      socketRef.current = null;
+    };
+  }, [queryClient, selectedTask]);
+
+  useEffect(() => {
+    if (!socketRef.current) return;
+
+    if (filters.project) {
+      socketRef.current.emit('join-project', filters.project);
+    }
+
+    return () => {
+      if (filters.project) {
+        socketRef.current.emit('leave-project', filters.project);
+      }
+    };
+  }, [filters.project]);
 
   const handleFilterChange = (key, value) => {
     setFilters((current) => ({ ...current, [key]: value }));
@@ -109,7 +189,7 @@ const DashboardPage = () => {
       }),
     });
     const tag = await response.json();
-    setTags((current) => [...current, tag]);
+    queryClient.setQueryData(['tags', filters.project || ''], (current = []) => [...current, tag]);
   };
 
   const handleUpdateTag = async (id, payload) => {
@@ -119,12 +199,12 @@ const DashboardPage = () => {
       body: JSON.stringify(payload),
     });
     const updatedTag = await response.json();
-    setTags((current) => current.map((tag) => (tag._id === id ? updatedTag : tag)));
+    queryClient.setQueryData(['tags', filters.project || ''], (current = []) => current.map((tag) => (tag._id === id ? updatedTag : tag)));
   };
 
   const handleDeleteTag = async (id) => {
     await fetch(`http://localhost:5000/api/tags/${id}`, { method: 'DELETE' });
-    setTags((current) => current.filter((tag) => tag._id !== id));
+    queryClient.setQueryData(['tags', filters.project || ''], (current = []) => current.filter((tag) => tag._id !== id));
   };
 
   const handleUpdateTask = async (taskId, payload) => {
@@ -139,7 +219,11 @@ const DashboardPage = () => {
     }
 
     const updatedTask = await response.json();
-    setTasks((current) => current.map((task) => (task._id === taskId ? updatedTask : task)));
+    queryClient.setQueriesData({ predicate: (query) => Array.isArray(query.queryKey) && query.queryKey[0] === 'tasks' }, (current = []) => {
+      if (!Array.isArray(current)) return [];
+      return current.map((task) => (task._id === taskId ? updatedTask : task));
+    });
+    return updatedTask;
   };
 
   const handleCreateTask = async (payload) => {
@@ -150,15 +234,27 @@ const DashboardPage = () => {
     });
 
     const task = await response.json();
-    setTasks((current) => [task, ...current]);
+    queryClient.setQueriesData({ predicate: (query) => Array.isArray(query.queryKey) && query.queryKey[0] === 'tasks' }, (current = []) => {
+      if (!Array.isArray(current)) return [task];
+      return [task, ...current.filter((item) => item._id !== task._id)];
+    });
+    return task;
   };
 
   return (
     <div className="min-h-screen bg-surface-alt p-4 md:p-8">
       <div className="mx-auto flex max-w-7xl flex-col gap-4">
         <div className="rounded-md border border-border bg-surface p-4">
-          <h1 className="font-display text-2xl font-semibold text-text-primary">Dashboard</h1>
-          <p className="mt-1 text-sm text-text-secondary">Search, filter, and organize your tasks.</p>
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <h1 className="font-display text-2xl font-semibold text-text-primary">Dashboard</h1>
+              <p className="mt-1 text-sm text-text-secondary">Search, filter, and organize your tasks.</p>
+            </div>
+            <div className="flex items-center gap-2 rounded-full border border-border bg-surface-alt px-2.5 py-1 text-xs text-text-secondary">
+              <span className={`h-2.5 w-2.5 rounded-full ${socketConnected ? 'bg-emerald-500' : 'bg-slate-400'}`} />
+              <span className="hidden sm:inline">Live</span>
+            </div>
+          </div>
         </div>
 
         <div className="grid gap-4 lg:grid-cols-[260px_minmax(0,1fr)]">

@@ -1,5 +1,6 @@
 const Task = require('../models/Task');
 const asyncHandler = require('../utils/asyncHandler');
+const { emitTaskEvent } = require('../socket');
 
 exports.getTasks = asyncHandler(async (req, res) => {
   const { status, priority, project, tag, sort = 'createdAt', order = 'desc', search } = req.query;
@@ -33,7 +34,9 @@ exports.createTask = asyncHandler(async (req, res) => {
   };
 
   const task = await Task.create(payload);
-  res.status(201).json(task);
+  const populatedTask = await Task.findById(task._id).populate('project', 'name').populate('assignedTo', 'name email');
+  emitTaskEvent('task:created', populatedTask);
+  res.status(201).json(populatedTask);
 });
 
 exports.getTaskById = asyncHandler(async (req, res) => {
@@ -58,7 +61,15 @@ exports.updateTask = asyncHandler(async (req, res) => {
     return res.status(404).json({ message: 'Task not found' });
   }
 
-  res.json(task);
+  const populatedTask = await Task.findById(task._id).populate('project', 'name').populate('assignedTo', 'name email');
+  emitTaskEvent('task:updated', populatedTask);
+  if (req.body.status) {
+    emitTaskEvent('task:status-changed', populatedTask);
+  }
+  if (req.body.subtasks) {
+    emitTaskEvent('task:subtasks-updated', populatedTask);
+  }
+  res.json(populatedTask);
 });
 
 exports.deleteTask = asyncHandler(async (req, res) => {
@@ -68,6 +79,7 @@ exports.deleteTask = asyncHandler(async (req, res) => {
     return res.status(404).json({ message: 'Task not found' });
   }
 
+  emitTaskEvent('task:deleted', { _id: req.params.id, project: task.project });
   res.json({ message: 'Task deleted' });
 });
 
@@ -107,5 +119,8 @@ exports.toggleRecurrence = asyncHandler(async (req, res) => {
     return res.status(404).json({ message: 'Task not found' });
   }
 
-  res.json(task);
+  const populatedTask = await Task.findById(task._id).populate('project', 'name').populate('assignedTo', 'name email');
+  emitTaskEvent('task:updated', populatedTask);
+  emitTaskEvent('task:subtasks-updated', populatedTask);
+  res.json(populatedTask);
 });
